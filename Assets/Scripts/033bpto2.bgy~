@@ -1,0 +1,140 @@
+using System;
+using System.IO;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEditor;
+using Dummiesman;
+
+public class SceneManager : MonoBehaviour
+{
+    static public SceneManager instance;
+
+    public GameObject modelPrefab;
+    public List<OwlViewerModel> selectedModels = new List<OwlViewerModel>();
+
+    private class ExtensionHandler
+    {
+        public string extension;
+        public Func<String, GameObject> handler;
+    }
+    private List<ExtensionHandler> extensionHandlers;
+    private List<OwlViewerModel> models = new List<OwlViewerModel>();
+
+    private void Awake()
+    {
+        instance = this;
+
+        extensionHandlers = new List<ExtensionHandler>() {
+            new ExtensionHandler() { extension = ".obj", handler = OpenObj },
+            new ExtensionHandler() { extension = ".stl", handler = OpenStl }
+        };
+    }
+
+    /// <summary>
+    /// Open an 3D object and add it to the scene.
+    /// </summary>
+    public void OpenObject()
+    {
+        // Ask the user for the 3D object path
+        string path = EditorUtility.OpenFilePanel("Owl viewer", "", "obj,stl");
+        if (path.Length == 0)
+            return;
+
+        // Check if the object extension is supported
+        string extension = Path.GetExtension(path).ToLower();
+        ExtensionHandler extensionHandler = extensionHandlers.Find(i => i.extension == extension);
+        if (extensionHandler == null)
+        {
+            // TODO : ajouter message d'erreur quand le format n'est pas supporté
+            return;
+        }
+
+        // Load the 3D object
+        GameObject obj = extensionHandler.handler(path);
+        if (obj == null)
+        {
+            // TODO : ajouter message d'erreur quand l'objet ne peut pas être ouvert
+            return;
+        }
+        // Add the 3D object to the scene
+        addObjectToScene(obj, Path.GetFileNameWithoutExtension(path));
+    }
+
+    /// <summary>
+    /// Select or unselect a model
+    /// </summary>
+    /// <param name="model">Model to select / unselect</param>
+    public void selectModel(OwlViewerModel model)
+    {
+
+    }
+
+    /// <summary>
+    /// Add the opened 3D object to the scene.
+    /// </summary>
+    /// <param name="obj">3D object to add</param>
+    private void addObjectToScene(GameObject obj, string name)
+    {
+        GameObject newObj = Instantiate(modelPrefab, new Vector3(0, 0, 0), Quaternion.identity);
+        newObj.GetComponent<OwlViewerModel>().modelName = verifyName(name);
+        obj.transform.parent = newObj.transform;
+        obj.transform.position = new Vector3(0, 0, 0);
+        models.Add(newObj.GetComponent<OwlViewerModel>());
+    }
+
+    /// <summary>
+    /// Check if a model has the same name and return an unique name
+    /// </summary>
+    /// <param name="name">Model name</param>
+    /// <returns>Return an unique name</returns>
+    private string verifyName(string name, int index = 0)
+    {
+        string nameToTest = name;
+
+        if (index != 0)
+            nameToTest += index;
+
+        foreach (OwlViewerModel model in models)
+        {
+            if (model.modelName == nameToTest)
+            {
+                return verifyName(name, index + 1);
+            }
+        }
+
+        return nameToTest;
+    }
+
+    /// <summary>
+    /// Load a .obj file with the given path.
+    /// </summary>
+    /// <param name="path">Path to the .obj file</param>
+    /// <returns>Return a GameObject representing the .obj file.</returns>
+    private GameObject OpenObj(string path)
+    {
+        return new OBJLoader().Load(path);
+    }
+
+    /// <summary>
+    /// Load a .stl file with the given path.
+    /// </summary>
+    /// <param name="path">Path to the .stl file</param>
+    /// <returns>Return a GameObject representing the .stl file.</returns>
+    private GameObject OpenStl(string path)
+    {
+        GameObject importedObj = Instantiate(new GameObject(), new Vector3(0, 0, 0), Quaternion.identity);
+        MeshFilter meshFilter = importedObj.AddComponent(typeof(MeshFilter)) as MeshFilter;
+
+        Mesh[] meshes = Parabox.Stl.Importer.Import(path);
+        CombineInstance[] combine = new CombineInstance[meshes.Length];
+
+        for (int i = 0; i < meshes.Length; i++)
+            combine[i].mesh = meshes[i];
+
+        meshFilter.mesh = new Mesh();
+        meshFilter.mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+        meshFilter.mesh.CombineMeshes(combine, true, false);
+
+        return importedObj;
+    }
+}

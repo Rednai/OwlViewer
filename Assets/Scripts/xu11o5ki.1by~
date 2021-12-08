@@ -1,0 +1,221 @@
+using System;
+using System.IO;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEditor;
+using Dummiesman;
+using RTG;
+
+public class OwlSceneManager : MonoBehaviour
+{
+    static public OwlSceneManager instance;
+
+    public Inspector inspector;
+    public GameObject modelPrefab;
+    public OrbitCamera orbitCamera;
+    public List<OwlViewerModel> selectedModels = new List<OwlViewerModel>();
+
+    private class ExtensionHandler
+    {
+        public string extension;
+        public Func<String, GameObject> handler;
+    }
+    private List<ExtensionHandler> extensionHandlers;
+    private List<OwlViewerModel> models = new List<OwlViewerModel>();
+
+    private void Awake()
+    {
+        instance = this;
+
+        extensionHandlers = new List<ExtensionHandler>() {
+            new ExtensionHandler() { extension = ".obj", handler = OpenObj },
+            new ExtensionHandler() { extension = ".stl", handler = OpenStl }
+        };
+    }
+
+    /// <summary>
+    /// Open an 3D object and add it to the scene.
+    /// </summary>
+    public void OpenObject()
+    {
+        // Ask the user for the 3D object path
+        string path = EditorUtility.OpenFilePanel("Owl viewer", "", "obj,stl");
+        if (path.Length == 0)
+            return;
+
+        // Check if the object extension is supported
+        string extension = Path.GetExtension(path).ToLower();
+        ExtensionHandler extensionHandler = extensionHandlers.Find(i => i.extension == extension);
+        if (extensionHandler == null)
+        {
+            // TODO : ajouter message d'erreur quand le format n'est pas supporté
+            return;
+        }
+
+        // Load the 3D object
+        GameObject obj = extensionHandler.handler(path);
+        if (obj == null)
+        {
+            // TODO : ajouter message d'erreur quand l'objet ne peut pas être ouvert
+            return;
+        }
+        // Add the 3D object to the scene
+        AddObjectToScene(obj, Path.GetFileNameWithoutExtension(path));
+    }
+
+    /// <summary>
+    /// Select or unselect a model
+    /// </summary>
+    /// <param name="model">Model to select / unselect</param>
+    public void SelectModel(OwlViewerModel modelToSelect)
+    {
+        OwlViewerModel model = selectedModels.Find(i => i.modelName == modelToSelect.modelName);
+
+        if (model == null)
+        {
+            if (!Input.GetKey(KeyCode.LeftShift))
+                selectedModels.Clear();
+            selectedModels.Add(modelToSelect);
+        }
+        else if (Input.GetKey(KeyCode.LeftShift))
+            selectedModels.Remove(model);
+        else if (selectedModels.Count != 1)
+        {
+            selectedModels.Clear();
+            selectedModels.Add(modelToSelect);
+        }
+        else
+            return;
+
+        Debug.Log("SelectModel called");
+
+        if (selectedModels.Count == 1)
+        {
+            // TO DELETE
+            var objectMoveGizmo = RTGizmosEngine.Get.CreateObjectMoveGizmo();
+            objectMoveGizmo.SetTargetObject(selectedModels[0].gameObject);
+            objectMoveGizmo.Gizmo.MoveGizmo.SetVertexSnapTargetObjects(new List<GameObject> { selectedModels[0].gameObject });
+            objectMoveGizmo.SetTransformSpace(GizmoSpace.Global);
+         
+            inspector.Init();
+        }
+        else
+            inspector.gameObject.SetActive(false);
+    }
+
+    /// <summary>
+    /// Add the opened 3D object to the scene.
+    /// </summary>
+    /// <param name="obj">3D object to add</param>
+    private void AddObjectToScene(GameObject obj, string name)
+    {
+        GameObject model = Instantiate(modelPrefab, new Vector3(0, 0, 0), Quaternion.identity);
+
+        obj.transform.parent = model.transform;
+        obj.transform.position = new Vector3(0, 0, 0);
+
+        model.GetComponent<OwlViewerModel>().modelName = VerifyName(name);
+
+        // Combine children meshes for the mesh collider to detect mouse click
+        MeshFilter[] meshFilters = model.GetComponentsInChildren<MeshFilter>();
+        CombineInstance[] combine = new CombineInstance[meshFilters.Length];
+        Mesh mesh = new Mesh();
+
+        for (int i = 0;  i < meshFilters.Length; i++)
+        {
+            combine[i].mesh = meshFilters[i].sharedMesh;
+            combine[i].transform = meshFilters[i].transform.localToWorldMatrix;
+        }
+
+        mesh.CombineMeshes(combine);
+        model.GetComponent<MeshCollider>().sharedMesh = mesh;
+
+        models.Add(model.GetComponent<OwlViewerModel>());
+
+        // Focus the camera on the new model
+        orbitCamera.target = model;
+        orbitCamera.UpdateCamera(true);
+
+        // Open the new model in the inspector and select it
+        SelectModel(model.GetComponent<OwlViewerModel>());
+    }
+
+    /// <summary>
+    /// Check if a model has the same name and return an unique name
+    /// </summary>
+    /// <param name="name">Model name</param>
+    /// <returns>Return an unique name</returns>
+    private string VerifyName(string name, int index = 0)
+    {
+        string nameToTest = name;
+
+        if (index != 0)
+            nameToTest += index;
+
+        foreach (OwlViewerModel model in models)
+        {
+            if (model.modelName == nameToTest)
+            {
+                return VerifyName(name, index + 1);
+            }
+        }
+
+        return nameToTest;
+    }
+
+    /// <summary>
+    /// Load a .obj file with the given path.
+    /// </summary>
+    /// <param name="path">Path to the .obj file</param>
+    /// <returns>Return a GameObject representing the .obj file.</returns>
+    private GameObject OpenObj(string path)
+    {
+        return new OBJLoader().Load(path);
+    }
+
+    /// <summary>
+    /// Load a .stl file with the given path.
+    /// </summary>
+    /// <param name="path">Path to the .stl file</param>
+    /// <returns>Return a GameObject representing the .stl file.</returns>
+    private GameObject OpenStl(string path)
+    {
+        GameObject importedObj = Instantiate(new GameObject(), new Vector3(0, 0, 0), Quaternion.identity);
+        MeshFilter meshFilter = importedObj.AddComponent(typeof(MeshFilter)) as MeshFilter;
+
+        Mesh[] meshes = Parabox.Stl.Importer.Import(path);
+        CombineInstance[] combine = new CombineInstance[meshes.Length];
+
+        for (int i = 0; i < meshes.Length; i++)
+            combine[i].mesh = meshes[i];
+
+        meshFilter.mesh = new Mesh();
+        meshFilter.mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+        meshFilter.mesh.CombineMeshes(combine, true, false);
+
+        return importedObj;
+    }
+
+    /// <summary>
+    /// Destroy all the object
+    /// </summary>
+    public void Clear()
+    {
+        foreach (OwlViewerModel model in models)
+        {
+            Destroy(model.gameObject);
+        }
+        models.Clear();
+        inspector.gameObject.SetActive(false);
+    }
+
+    private void Update()
+    {
+
+        if (Input.GetKeyDown(KeyCode.F) && selectedModels.Count == 1)
+        {
+            orbitCamera.target = selectedModels[0].gameObject;
+            orbitCamera.UpdateCamera(true);
+        }
+    }
+}
